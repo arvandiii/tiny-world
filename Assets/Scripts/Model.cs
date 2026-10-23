@@ -1,9 +1,10 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
 /// Rule-based prototype NPC. Random-walks to walkable cells within sightRange,
-/// pays terrain-dependent energy, sleeps when exhausted, and passes out / dies
-/// if it runs out of energy in water.
+/// pays terrain-dependent energy, sleeps when exhausted, passes out / dies if it
+/// runs out of energy in water, and goes after the nearest visible food when hungry.
 /// Long-term this behavior is meant to be replaced by a trained AI.
 ///
 /// Movement is driven by code (terrain speed multipliers), not by physics tricks.
@@ -48,6 +49,14 @@ public class Model : MonoBehaviour
     [Tooltip("Speed factor at 0 energy (linearly scaled up to 1 at the threshold).")]
     [Range(0f, 1f)] public float minSpeedFactor = 0.3f;
 
+    [Header("Food")]
+    [Tooltip("The Model counts as hungry at or below this hunger value.")]
+    [Range(0f, 100f)] public float hungryThreshold = 50f;
+    [Tooltip("How often (seconds) a hungry Model scans for food in sight.")]
+    public float foodScanInterval = 0.25f;
+    [Tooltip("Food that blocked the straight-line path is ignored for this long.")]
+    public float unreachableFoodIgnoreSeconds = 20f;
+
     [Header("Pause between destinations")]
     public float pauseMin = 0.3f;
     public float pauseMax = 3f;
@@ -65,11 +74,21 @@ public class Model : MonoBehaviour
     [Header("Spawn")]
     public bool snapToCellCenterOnStart = true;
 
+    public bool IsHungry => hunger <= hungryThreshold;
+    public bool CanEat => IsHungry && !isDead && !isSleeping && !isPassedOut;
+
     private Rigidbody rb;
     private GridManager grid;
     private Vector3 target;
     private bool hasTarget;
     private float pauseTimer;
+
+    // Food seeking
+    private Food targetFood;
+    private bool chasingFood;
+    private float scanTimer;
+    private readonly Dictionary<Food, float> ignoredFood = new Dictionary<Food, float>();
+    private readonly List<Food> pruneBuffer = new List<Food>();
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -109,6 +128,7 @@ public class Model : MonoBehaviour
         sleepSecondsToFull = Mathf.Max(0.01f, sleepSecondsToFull);
         pauseMin = Mathf.Max(0f, pauseMin);
         pauseMax = Mathf.Max(pauseMin, pauseMax);
+        foodScanInterval = Mathf.Max(0.02f, foodScanInterval);
     }
 
     // All logic runs in FixedUpdate because movement is applied through the Rigidbody.
@@ -147,8 +167,19 @@ public class Model : MonoBehaviour
             return;
         }
 
-        // Voluntary sleep when low on energy, but never in water.
-        if (voluntarySleepEnergy > 0f && energy <= voluntarySleepEnergy && grid.CanSleepOn(here))
+        // Hungry Models don't idle: finding food is the top priority.
+        if (IsHungry)
+        {
+            pauseTimer = 0f;
+            UpdateFoodTarget(dt);
+        }
+        else if (chasingFood)
+        {
+            ClearTarget(); // safety: no longer hungry, drop the food chase
+        }
+
+        // Voluntary sleep when low on energy, but never in water and never mid food chase.
+        if (!chasingFood && voluntarySleepEnergy > 0f && energy <= voluntarySleepEnergy && grid.CanSleepOn(here))
         {
             StopHorizontal();
             StartSleep();
@@ -164,9 +195,89 @@ public class Model : MonoBehaviour
             return;
         }
 
-        if (!hasTarget) PickTarget();
+        if (!hasTarget) PickTarget(); // patrol: random walk (also what a hungry Model does until it sees food)
         if (hasTarget) MoveTowardTarget(dt, here);
         else StopHorizontal();
+    }
+
+    // ------------------------------------------------------------------ target helpers
+
+    private void ClearTarget()
+    {
+        hasTarget = false;
+        chasingFood = false;
+        targetFood = null;
+    }
+
+    // ------------------------------------------------------------------ food
+
+    /// <summary>Called by Food when this Model touches it while hungry.</summary>
+    public void Eat(Food food)
+    {
+        hunger = Mathf.Min(100f, hunger + food.hungerRestore);
+        energy = Mathf.Min(maxEnergy, energy + food.energyRestore);
+        ClearTarget();
+
+        // TODO: personality-specific eating (Greedy eats even when full, Lazy takes the nearest, Thief steals)
+    }
+
+    private void UpdateFoodTarget(float dt)
+    {
+        // Already chasing food: keep going unless it vanished (eaten by someone else).
+        if (chasingFood)
+        {
+            if (targetFood != null && !targetFood.IsConsumed) return;
+            ClearTarget();
+        }
+
+        scanTimer -= dt;
+        if (scanTimer > 0f) return;
+        scanTimer = foodScanInterval;
+
+        Food nearest = FindNearestFood();
+        if (nearest == null) return; // nothing in sight: keep patrolling
+
+        targetFood = nearest;
+        chasingFood = true;
+        target = nearest.transform.position;
+        hasTarget = true;
+    }
+
+    /// <summary>Nearest food within sightRange that is on walkable terrain and not recently unreachable.</summary>
+    private Food FindNearestFood()
+    {
+        PruneIgnoredFood();
+
+        Vector3 pos = rb.position;
+        float bestSqr = sightRange * sightRange;
+        Food best = null;
+
+        foreach (Food f in Food.All)
+        {
+            if (f == null || f.IsConsumed) continue;
+            if (ignoredFood.ContainsKey(f)) continue;
+
+            Vector3 d = f.transform.position - pos;
+            d.y = 0f;
+            float sqr = d.sqrMagnitude;
+            if (sqr > bestSqr) continue;
+
+            if (!grid.IsWalkable(f.transform.position, canSwim)) continue;
+
+            bestSqr = sqr;
+            best = f;
+        }
+        return best;
+    }
+
+    private void PruneIgnoredFood()
+    {
+        if (ignoredFood.Count == 0) return;
+
+        pruneBuffer.Clear();
+        foreach (KeyValuePair<Food, float> kv in ignoredFood)
+            if (kv.Key == null || Time.time >= kv.Value) pruneBuffer.Add(kv.Key);
+        foreach (Food f in pruneBuffer) ignoredFood.Remove(f);
     }
 
     // ------------------------------------------------------------------ sleep
@@ -174,7 +285,7 @@ public class Model : MonoBehaviour
     private void StartSleep()
     {
         isSleeping = true;
-        hasTarget = false;
+        ClearTarget();
     }
 
     private void UpdateSleep(float dt, TerrainType here)
@@ -185,7 +296,6 @@ public class Model : MonoBehaviour
 
         if (energy >= maxEnergy) isSleeping = false;
 
-        // TODO: food restores a small amount of energy (not implemented, no food yet)
         // TODO: temperature affects sleep quality (cold spots)
     }
 
@@ -194,7 +304,7 @@ public class Model : MonoBehaviour
     private void PassOut()
     {
         isPassedOut = true;
-        hasTarget = false;
+        ClearTarget();
     }
 
     private void UpdatePassedOut(float dt)
@@ -202,7 +312,7 @@ public class Model : MonoBehaviour
         health = Mathf.Max(0f, health - passedOutHealthDrainPerSecond * dt);
         if (health <= 0f) Die();
 
-        // TODO: allow rescue (another Model or the current dragging the body out of the water)
+        // TODO: allow rescue (another Model dragging the body out of the water)
     }
 
     private void Die()
@@ -210,7 +320,7 @@ public class Model : MonoBehaviour
         isDead = true;
         isPassedOut = false;
         isSleeping = false;
-        hasTarget = false;
+        ClearTarget();
         health = 0f;
         Debug.Log($"[Model] {name} died (ran out of energy in water).", this);
 
@@ -251,8 +361,11 @@ public class Model : MonoBehaviour
 
         if (dist <= arrivalDistance)
         {
-            hasTarget = false;
-            pauseTimer = Random.Range(pauseMin, pauseMax);
+            // Fallback in case the trigger didn't fire: eat the food we walked to.
+            if (chasingFood && targetFood != null) targetFood.TryConsume(this);
+
+            ClearTarget();
+            pauseTimer = IsHungry ? 0f : Random.Range(pauseMin, pauseMax);
             StopHorizontal();
             return;
         }
@@ -264,11 +377,15 @@ public class Model : MonoBehaviour
         Vector3 dir = toTarget / dist;
         Vector3 next = pos + dir * step;
 
-        // Straight-line walk, no pathfinding: if the next step enters an
-        // unwalkable cell, abandon this target and re-pick immediately (no pause).
+        // Straight-line walk, no pathfinding: if the next step enters an unwalkable cell,
+        // abandon this target and re-pick immediately (no pause).
         if (!grid.IsWalkable(next, canSwim))
         {
-            hasTarget = false;
+            // Remember blocked food so we don't instantly lock onto it again.
+            if (chasingFood && targetFood != null)
+                ignoredFood[targetFood] = Time.time + unreachableFoodIgnoreSeconds;
+
+            ClearTarget();
             StopHorizontal();
             return;
         }
@@ -281,9 +398,8 @@ public class Model : MonoBehaviour
         hunger = Mathf.Max(0f, hunger - hungerDrainPerSecondMoving * dt);
 
         // TODO: low hunger makes energy drain faster and decreases health
-        // TODO: hunger at 0 should make finding food the top priority
         // TODO: swimming — non-swimmers may learn to swim at an energy cost
-        // TODO: other health changes (food, dangers)
+        // TODO: other health changes (dangers)
     }
 
     private void StopHorizontal()
@@ -309,7 +425,7 @@ public class Model : MonoBehaviour
 
         if (Application.isPlaying && hasTarget)
         {
-            Gizmos.color = Color.red;
+            Gizmos.color = chasingFood ? Color.green : Color.red; // green = heading to food
             Gizmos.DrawLine(transform.position, target);
             Gizmos.DrawWireSphere(target, 0.25f);
         }
