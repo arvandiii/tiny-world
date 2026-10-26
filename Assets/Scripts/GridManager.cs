@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// Source of truth for terrain: a plain 2D array. No rendering, no pathfinding.
-/// A Tilemap (or any renderer) can later be a display-only layer on top of this.
+/// Source of truth for terrain: a plain 2D array. No pathfinding.
+/// In Play mode it also spawns one tile object per cell (from the per-terrain prefabs you assign)
+/// as a display layer. The tiles are visuals only; the array stays the source of truth.
 ///
 /// Layout: XZ plane, Y up. Cell (0,0) has its corner at world (0,0,0) and the grid
 /// extends toward +X and +Z. The grid is NOT centered on the origin.
@@ -63,9 +65,32 @@ public class GridManager : MonoBehaviour
     [Tooltip("Applied last, so these override everything else. Inclusive cell coordinates.")]
     [SerializeField] private TerrainPatch[] customPatches = new TerrainPatch[0];
 
-    [Header("Ground plane (optional)")]
+    [Header("Tile prefabs (one per terrain type)")]
+    [Tooltip("Expected footprint: 1x1 unit, pivot at the center of the tile's top surface.")]
+    [SerializeField] private GameObject plainTilePrefab;
+    [SerializeField] private GameObject muddyTilePrefab;
+    [SerializeField] private GameObject stonyTilePrefab;
+    [SerializeField] private GameObject waterTilePrefab;
+
+    [Header("Tile spawning")]
+    [Tooltip("If a prefab slot is empty, spawn a flat colored cube instead so the map is still visible.")]
+    [SerializeField] private bool useFallbackTiles = true;
+    [Tooltip("Multiply each tile's X/Z scale by cellSize (assumes prefabs are 1x1 units).")]
+    [SerializeField] private bool scaleTilesToCellSize = true;
+    [Tooltip("Lifts tiles slightly to avoid flickering with a ground plane at Y = 0.")]
+    [SerializeField] private float tileYOffset = 0.01f;
+    [Tooltip("Off = tile colliders are removed and the ground plane handles physics. On = keep prefab colliders.")]
+    [SerializeField] private bool keepTileColliders = false;
+
+    [Header("Ground collider")]
+    [Tooltip("One invisible box collider covering the whole grid, top surface at Y = 0. Models stand on this, so no ground plane or per-tile colliders are needed.")]
+    [SerializeField] private bool generateGroundCollider = true;
+    [SerializeField] private float groundColliderThickness = 1f;
+
+    [Header("Ground plane (optional, visual only now)")]
     [Tooltip("Assumes Unity's built-in Plane (10x10 units at scale 1).")]
     [SerializeField] private Transform groundPlane;
+    [Tooltip("Fits the plane on Awake and whenever the map is rebuilt.")]
     [SerializeField] private bool fitGroundPlaneOnAwake = true;
 
     [Header("Terrain tuning (Inspector)")]
@@ -74,10 +99,18 @@ public class GridManager : MonoBehaviour
     [SerializeField] private TerrainProfile stony = new TerrainProfile { moveEnergyPerSecond = 2f, speedMultiplier = 0.85f, sleepQuality = 0.5f };
     [SerializeField] private TerrainProfile water = new TerrainProfile { moveEnergyPerSecond = 4f, speedMultiplier = 0.5f, sleepQuality = 0f };
 
-    [Header("Debug (visualization only, NOT the source of truth)")]
+    [Header("Debug")]
+    [Tooltip("Edit-mode preview only (colored squares in the Scene view). In Play mode the spawned tiles are used instead.")]
     [SerializeField] private bool DebugDrawGrid = true;
 
+    private const float FallbackThickness = 0.1f;
+
     private TerrainType[,] terrain;
+    private Transform tileRoot;
+    private GameObject groundColliderObject;
+    private bool tilesDirty;
+    private readonly List<Material> fallbackMaterials = new List<Material>();
+    private readonly List<Collider> colliderBuffer = new List<Collider>();
 
     public int Width => width;
     public int Height => height;
@@ -95,12 +128,15 @@ public class GridManager : MonoBehaviour
         }
         Instance = this;
         BuildMap();
-        if (fitGroundPlaneOnAwake && groundPlane != null) FitGroundPlane();
+        RefreshVisuals();
+        tilesDirty = false;
     }
 
     private void OnDestroy()
     {
         if (Instance == this) Instance = null;
+        DestroyTiles();
+        if (groundColliderObject != null) Destroy(groundColliderObject);
     }
 
     private void OnValidate()
@@ -109,12 +145,47 @@ public class GridManager : MonoBehaviour
         height = Mathf.Max(1, height);
         cellSize = Mathf.Max(0.01f, cellSize);
         terrain = null; // rebuild lazily so Inspector edits show up immediately
+
+        // Tiles can't be spawned/destroyed inside OnValidate; flag it and let Update do it.
+        if (Application.isPlaying) tilesDirty = true;
+    }
+
+    private void Update()
+    {
+        if (!tilesDirty) return;
+        tilesDirty = false;
+        RefreshVisuals();
     }
 
     private void EnsureMap()
     {
         if (terrain == null || terrain.GetLength(0) != width || terrain.GetLength(1) != height)
             BuildMap();
+    }
+
+    private void RefreshVisuals()
+    {
+        RebuildGroundCollider();
+        RebuildTiles();
+        if (fitGroundPlaneOnAwake && groundPlane != null) FitGroundPlane();
+    }
+
+    /// <summary>One box collider for the whole grid; far cheaper and smoother than one per tile.</summary>
+    private void RebuildGroundCollider()
+    {
+        if (groundColliderObject != null) Destroy(groundColliderObject);
+        groundColliderObject = null;
+        if (!generateGroundCollider) return;
+
+        float sx = width * cellSize;
+        float sz = height * cellSize;
+        float thickness = Mathf.Max(0.1f, groundColliderThickness);
+
+        GameObject go = new GameObject("Ground Collider (generated)");
+        go.transform.position = new Vector3(sx * 0.5f, -thickness * 0.5f, sz * 0.5f); // top surface at Y = 0
+        BoxCollider box = go.AddComponent<BoxCollider>();
+        box.size = new Vector3(sx, thickness, sz);
+        groundColliderObject = go;
     }
 
     [ContextMenu("Fit Ground Plane")]
@@ -201,6 +272,122 @@ public class GridManager : MonoBehaviour
                     terrain[x, z] = type;
     }
 
+    // ------------------------------------------------------------------ tile spawning (display layer)
+
+    /// <summary>Destroys and respawns all tiles from the current terrain array. Play mode only.</summary>
+    [ContextMenu("Rebuild Tiles (Play Mode)")]
+    public void RebuildTiles()
+    {
+        if (!Application.isPlaying) return;
+
+        EnsureMap();
+        DestroyTiles();
+
+        tileRoot = new GameObject("Tiles (generated)").transform;
+
+        // Resolve one source object per storable terrain type (Plain..Water).
+        const int typeCount = 4;
+        GameObject[] sources = new GameObject[typeCount];
+        float[] yShift = new float[typeCount];
+        List<GameObject> templates = new List<GameObject>();
+
+        for (int i = 0; i < typeCount; i++)
+        {
+            TerrainType type = (TerrainType)i;
+            GameObject prefab = GetTilePrefab(type);
+
+            if (prefab != null)
+            {
+                sources[i] = prefab;
+            }
+            else if (useFallbackTiles)
+            {
+                GameObject template = CreateFallbackTemplate(type);
+                template.transform.SetParent(tileRoot, false);
+                sources[i] = template;
+                yShift[i] = -FallbackThickness * 0.5f; // keep the cube's top surface at tileYOffset
+                templates.Add(template);
+            }
+            else
+            {
+                Debug.LogWarning($"[GridManager] No tile prefab assigned for {type}; those cells will be empty.", this);
+            }
+        }
+
+        Vector3 sizeScale = scaleTilesToCellSize ? new Vector3(cellSize, 1f, cellSize) : Vector3.one;
+
+        for (int x = 0; x < width; x++)
+        {
+            for (int z = 0; z < height; z++)
+            {
+                int typeIndex = (int)terrain[x, z];
+                GameObject src = sources[typeIndex];
+                if (src == null) continue;
+
+                Vector3 pos = CellCenterToWorld(x, z);
+                pos.y = tileYOffset + yShift[typeIndex];
+
+                GameObject tile = Instantiate(src, pos, src.transform.rotation, tileRoot);
+                tile.name = $"Tile {x},{z}";
+                tile.transform.localScale = Vector3.Scale(src.transform.localScale, sizeScale);
+
+                if (!keepTileColliders) StripColliders(tile);
+            }
+        }
+
+        // Clones are independent, so the fallback templates are no longer needed.
+        foreach (GameObject t in templates) Destroy(t);
+    }
+
+    private void DestroyTiles()
+    {
+        if (tileRoot != null) Destroy(tileRoot.gameObject);
+        tileRoot = null;
+
+        foreach (Material m in fallbackMaterials)
+            if (m != null) Destroy(m);
+        fallbackMaterials.Clear();
+    }
+
+    private void StripColliders(GameObject tile)
+    {
+        tile.GetComponentsInChildren(true, colliderBuffer);
+        foreach (Collider c in colliderBuffer) Destroy(c);
+    }
+
+    private GameObject GetTilePrefab(TerrainType type)
+    {
+        switch (type)
+        {
+            case TerrainType.Plain: return plainTilePrefab;
+            case TerrainType.Muddy: return muddyTilePrefab;
+            case TerrainType.Stony: return stonyTilePrefab;
+            case TerrainType.Water: return waterTilePrefab;
+            default: return null;
+        }
+    }
+
+    private GameObject CreateFallbackTemplate(TerrainType type)
+    {
+        GameObject go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        go.name = $"FallbackTile_{type}";
+        go.transform.localScale = new Vector3(1f, FallbackThickness, 1f);
+
+        Collider col = go.GetComponent<Collider>();
+        if (col != null) DestroyImmediate(col); // immediate, so clones made this frame don't inherit it
+
+        Renderer r = go.GetComponent<Renderer>();
+        if (r != null)
+        {
+            Color c = ColorFor(type);
+            c.a = 1f;
+            Material m = new Material(r.sharedMaterial) { color = c };
+            r.sharedMaterial = m;
+            fallbackMaterials.Add(m);
+        }
+        return go;
+    }
+
     // ------------------------------------------------------------------ coordinate conversion
 
     /// <summary>World position of the cell's CORNER (min X, min Z).</summary>
@@ -281,13 +468,13 @@ public class GridManager : MonoBehaviour
         }
     }
 
-    // ------------------------------------------------------------------ debug visualization
+    // ------------------------------------------------------------------ edit-mode preview
 
-    // DEBUG VISUALIZATION ONLY. The 2D array above is the source of truth.
-    // A Tilemap renderer can replace this later.
+    // EDIT-MODE PREVIEW ONLY. In Play mode the spawned tiles replace this.
+    // The 2D array above is the source of truth.
     private void OnDrawGizmos()
     {
-        if (!DebugDrawGrid) return;
+        if (!DebugDrawGrid || Application.isPlaying) return;
         EnsureMap();
 
         Vector3 size = new Vector3(cellSize * 0.95f, 0.02f, cellSize * 0.95f);
