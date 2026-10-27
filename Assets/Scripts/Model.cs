@@ -79,6 +79,7 @@ public class Model : MonoBehaviour
 
     private Rigidbody rb;
     private GridManager grid;
+    private TemperatureManager temperature; // optional: without one, there are no temperature effects
     private Vector3 target;
     private bool hasTarget;
     private float pauseTimer;
@@ -108,6 +109,8 @@ public class Model : MonoBehaviour
             enabled = false;
             return;
         }
+
+        temperature = TemperatureManager.Instance;
 
         Vector2Int c = grid.WorldToCell(transform.position);
         if (snapToCellCenterOnStart)
@@ -291,12 +294,14 @@ public class Model : MonoBehaviour
     private void UpdateSleep(float dt, TerrainType here)
     {
         float quality = grid.GetProfile(here).sleepQuality;
+        if (temperature != null)
+            quality *= temperature.GetSleepQualityMultiplier(temperature.GetTemperatureAt(rb.position));
         float regenPerSecond = (maxEnergy / sleepSecondsToFull) * quality;
         energy = Mathf.Min(maxEnergy, energy + regenPerSecond * dt);
 
         if (energy >= maxEnergy) isSleeping = false;
 
-        // TODO: temperature affects sleep quality (cold spots)
+        // TODO: local cold spots / hot temperatures affecting sleep (plug into TemperatureManager.GetTemperatureAt)
     }
 
     // ------------------------------------------------------------------ passing out / death
@@ -325,6 +330,7 @@ public class Model : MonoBehaviour
         Debug.Log($"[Model] {name} died (ran out of energy in water).", this);
 
         // TODO: death handling (corpse, removal, notify community)
+        // TODO: corpse decomposition (speed depends on temperature: cold = slower, hot = faster)
     }
 
     // ------------------------------------------------------------------ target picking
@@ -372,7 +378,18 @@ public class Model : MonoBehaviour
 
         // Speed depends on the terrain under the Model and on its energy level.
         GridManager.TerrainProfile profile = grid.GetProfile(standingOn);
-        float speed = moveSpeed * profile.speedMultiplier * EnergySpeedFactor();
+
+        // Temperature: cold lowers the speed multiplier on every terrain and raises energy cost.
+        float terrainSpeedMultiplier = profile.speedMultiplier;
+        float energyCostMultiplier = 1f;
+        if (temperature != null)
+        {
+            float temp = temperature.GetTemperatureAt(pos);
+            terrainSpeedMultiplier = temperature.AdjustSpeedMultiplier(terrainSpeedMultiplier, temp);
+            energyCostMultiplier = temperature.GetEnergyCostMultiplier(temp);
+        }
+
+        float speed = moveSpeed * terrainSpeedMultiplier * EnergySpeedFactor();
         float step = Mathf.Min(speed * dt, dist);
         Vector3 dir = toTarget / dist;
         Vector3 next = pos + dir * step;
@@ -394,11 +411,13 @@ public class Model : MonoBehaviour
         rb.linearVelocity = new Vector3(horizontalVelocity.x, rb.linearVelocity.y, horizontalVelocity.z);
 
         // Costs depend on the terrain the Model is standing on (current cell).
-        energy = Mathf.Max(0f, energy - profile.moveEnergyPerSecond * dt);
+        energy = Mathf.Max(0f, energy - profile.moveEnergyPerSecond * energyCostMultiplier * dt);
         hunger = Mathf.Max(0f, hunger - hungerDrainPerSecondMoving * dt);
 
         // TODO: low hunger makes energy drain faster and decreases health
         // TODO: swimming — non-swimmers may learn to swim at an energy cost
+        // TODO: hot temperatures (extra energy cost, dehydration, health damage)
+        // TODO: water temperature affects swimming (energy cost, health)
         // TODO: other health changes (dangers)
     }
 

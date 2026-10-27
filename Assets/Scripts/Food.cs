@@ -19,6 +19,8 @@ public class Food : MonoBehaviour
     public float energyRestore = 5f;
 
     // TODO: different food kinds (berries, fish, meat, apples) with different values
+    // TODO: food rots over time; temperature affects the rate (cold = lasts longer, hot = rots sooner)
+    //       via TemperatureManager.Instance.GetTemperatureAt(transform.position)
 
     public bool IsConsumed { get; private set; }
 

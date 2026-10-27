@@ -438,6 +438,8 @@ public class GridManager : MonoBehaviour
         // TODO: GDD says water can be used as a border — confirm OOB should always be impassable
         if (t == TerrainType.OutOfBounds) return false;
 
+        // TODO: water freezes in low temperatures (TemperatureManager) and forms frozen lakes / rivers / seas
+        //       that are walkable without swimming; needs a Frozen terrain state and matching tile prefab
         if (t == TerrainType.Water) return canSwim;
         return true;
     }
