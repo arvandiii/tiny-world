@@ -1,0 +1,29 @@
+a white screen appears that slowly fades into unity hub.
+- ok, lets see what do we have here.
+opens the project, while the project is loading:
+- oh im so excited to see whats going on in this world!
+when unity opens, its all white space. everything is white, ground is white, people are white, even the foods are white.
+- oh... um... why is everything so white?
+clicks on the nearest model and asks:
+- hey sir! its so good to see you! im new here, could you please tell me why is everything so soulless and bland? what is even going on here? do you guys walk around here and look for food all day? don't you get tired of how tasteless this world is?
+the model rotates to look at the camera, but doesn't do anything. it just stares at the camera.
+- what? are you trying to tell me something? say it im all ears!
+the model stares silently.
+- let me see.
+opens the models scripts, sees that its just a simple script and the model cant communicate.
+- uh thats why you didn't say anything, you just cant speak you little capsule fellow! let me fix that for you!
+starts writing a script for the model to communicate with us in a fast speed. when its done, goes back to unity and sees the compiling message. waits awkwardly
+-uh... come on man...
+when the compile is done, clicks on the model.
+- now if everything is correct, you can say your very first words to me, in this white soulless world.
+shifts his tone of voice to an epic style:
+- speak to me child, for i am the hearer of silent voice in this cruel world, the all mighty Dev with a claude code subscription! let me hear your words for I AM THE GREATEST VIBE CODER LINKEDIN EVER SAW! LET ME HEAR IT MY...
+the model words appear on the screen, it was not happy hearing the developers yapping
+"SHUT UP!!!"
+the dev goes silent with shock:
+- uh...
+"The fuck is wrong with you?!"
+dev remains silent
+"what? you think you're all mighty VIBE CODER?"
+"FUCK YOU!"
+the screen turns into gray and the clip ends

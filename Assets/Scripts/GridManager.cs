@@ -210,7 +210,7 @@ public class GridManager : MonoBehaviour
         terrain = new TerrainType[width, height];
         FillRect(0, 0, width - 1, height - 1, TerrainType.Plain);
 
-        if (useDefaultTestPatches) ApplyDefaultTestPatches();
+        // if (useDefaultTestPatches) ApplyDefaultTestPatches();
         if (randomScatter != null && randomScatter.enabled) ApplyRandomScatter();
 
         if (customPatches != null)
@@ -226,16 +226,16 @@ public class GridManager : MonoBehaviour
     }
 
     /// <summary>Hardcoded, reproducible patches; each non-plain type is within 15 cells of (0,0).</summary>
-    private void ApplyDefaultTestPatches()
-    {
-        FillRect(3, 3, 6, 5, TerrainType.Muddy);
-        FillRect(10, 3, 12, 5, TerrainType.Stony);
-        FillRect(6, 8, 9, 10, TerrainType.Water);
-
-        FillRect(18, 4, 22, 7, TerrainType.Muddy);
-        FillRect(4, 20, 8, 24, TerrainType.Stony);
-        FillRect(20, 20, 26, 26, TerrainType.Water);
-    }
+    // private void ApplyDefaultTestPatches()
+    // {
+    //     FillRect(3, 3, 6, 5, TerrainType.Muddy);
+    //     FillRect(10, 3, 12, 5, TerrainType.Stony);
+    //     FillRect(6, 8, 9, 10, TerrainType.Water);
+    //
+    //     FillRect(18, 4, 22, 7, TerrainType.Muddy);
+    //     FillRect(4, 20, 8, 24, TerrainType.Stony);
+    //     FillRect(20, 20, 26, 26, TerrainType.Water);
+    // }
 
     private void ApplyRandomScatter()
     {
