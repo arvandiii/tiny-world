@@ -83,12 +83,32 @@ public class CameraController : MonoBehaviour
 
     public void SelectModel(Model model)
     {
+        // If a previous model is still selected, tell its dialogue component to stop facing.
+        if (selectedModel != null)
+        {
+            var prevDialogue = selectedModel.GetComponent<ModelDialogue>();
+            if (prevDialogue != null) prevDialogue.SetSelected(false);
+        }
+
         selectedModel = model;
         isModelSelected = model != null;
+
+        // Tell the newly-selected model's dialogue component to face the camera.
+        if (selectedModel != null)
+        {
+            var nextDialogue = selectedModel.GetComponent<ModelDialogue>();
+            if (nextDialogue != null) nextDialogue.SetSelected(true);
+        }
     }
 
     public void Deselect()
     {
+        if (selectedModel != null)
+        {
+            var prevDialogue = selectedModel.GetComponent<ModelDialogue>();
+            if (prevDialogue != null) prevDialogue.SetSelected(false);
+        }
+
         selectedModel = null;
         isModelSelected = false;
     }

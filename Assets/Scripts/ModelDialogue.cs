@@ -12,6 +12,14 @@ using UnityEngine;
 ///   2. Then the line's text appears in the cloud (typewriter effect, or instantly).
 ///   3. The text stays for visibleSeconds, then the cloud hides (0 = stay until the next line).
 ///
+/// When the Model is selected, it smoothly rotates on the Y axis to face the camera,
+/// so a capsule never tips over. Selection is driven by SetSelected(bool), which
+/// CameraController.SelectModel / Deselect call.
+///
+/// While selected, the Model is also FROZEN in place: its position is snapshotted on
+/// selection and pinned every LateUpdate (plus Rigidbody constraints if one exists).
+/// When deselected, it stays exactly where it was frozen — no position restore.
+///
 /// Scene setup: a world-space Canvas (the cloud) as a child of the character, containing
 /// a background Image and a TextMeshPro text. See the setup steps for the exact layout.
 /// </summary>
@@ -48,10 +56,40 @@ public class ModelDialogue : MonoBehaviour
     [Tooltip("Typewriter speed for the text. 0 = show the whole text instantly.")]
     [SerializeField] private float typewriterCharsPerSecond = 30f;
 
+    [Header("Face Camera When Selected")]
+    [Tooltip("While selected, rotate on Y only to face the camera. Capsule-safe (never tips over).")]
+    [SerializeField] private bool faceCameraWhenSelected = true;
+    [Tooltip("SmoothDamp time for the Y rotation. Lower = snappier, higher = lazier.")]
+    [SerializeField] private float faceCameraSmoothTime = 0.2f;
+    [Tooltip("Extra Y rotation applied on top of facing the camera (degrees). Useful if the model's forward axis is offset.")]
+    [SerializeField] private float faceCameraYawOffset = 0f;
+
+    [Header("Freeze While Selected")]
+    [Tooltip("While selected, the Model's position is pinned so it cannot drift or be pushed.")]
+    [SerializeField] private bool freezePositionWhileSelected = true;
+    [Tooltip("Freeze the transform you rotate to face the camera. Set this if the capsule is a child of the ModelDialogue object.")]
+    [SerializeField] private Transform faceTarget;
+
     private int nextLineIndex;
     private bool busy;                 // true while dots/typing are in progress
     private Coroutine currentRoutine;
     private Camera cam;
+
+    // ---- selection + facing (new) ----
+    // NOTE: no original rotation is stored. When the model is deselected, it simply
+    // stops facing the camera and stays where it is. That's intentional — the model
+    // moves freely, so "restoring" a stale rotation would be wrong anyway.
+    private bool isSelected;
+    private float faceVelocity;        // SmoothDampAngular velocity for the Y-facing rotation
+
+    // ---- freeze-while-selected ----
+    // Snapshotted on SetSelected(true), applied every LateUpdate, released on
+    // SetSelected(false) with NO restore (the model just stays put).
+    private Vector3 frozenPosition;
+    private bool hasFrozenPosition;
+    private Rigidbody rb;
+    private RigidbodyConstraints savedConstraints;
+    private bool hasSavedConstraints;
 
     /// <summary>True if this character is allowed to speak and still has a line to say.</summary>
     public bool CanSpeak =>
@@ -59,6 +97,12 @@ public class ModelDialogue : MonoBehaviour
 
     /// <summary>True while the cloud is showing dots or typing out a line.</summary>
     public bool IsBusy => busy;
+
+    /// <summary>True while this Model is the selected one and (if enabled) facing the camera.</summary>
+    public bool IsSelected => isSelected;
+
+    /// <summary>Transform that gets rotated to face the camera. Defaults to this object.</summary>
+    private Transform FaceTarget => faceTarget != null ? faceTarget : transform;
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -72,6 +116,7 @@ public class ModelDialogue : MonoBehaviour
         }
 
         cam = Camera.main;
+        rb = GetComponent<Rigidbody>();
         HideBubble();
     }
 
@@ -83,9 +128,22 @@ public class ModelDialogue : MonoBehaviour
     // The cloud always faces the camera so the text stays readable from a top-down view.
     private void LateUpdate()
     {
-        if (!bubbleRoot.activeSelf) return;
-        if (cam == null) cam = Camera.main;
-        if (cam != null) bubbleRoot.transform.rotation = cam.transform.rotation;
+        if (bubbleRoot.activeSelf)
+        {
+            if (cam == null) cam = Camera.main;
+            if (cam != null) bubbleRoot.transform.rotation = cam.transform.rotation;
+        }
+
+        // Freeze the model's position while selected. Runs in LateUpdate so it wins
+        // against any movement done in Update / FixedUpdate that frame.
+        if (isSelected && freezePositionWhileSelected && hasFrozenPosition)
+            transform.position = frozenPosition;
+
+        // Face the camera on Y only while selected. Runs after dialogue logic so it
+        // never interferes with speech timing, and after the bubble billboard so
+        // the bubble stays screen-aligned regardless of the model's rotation.
+        if (isSelected && faceCameraWhenSelected)
+            FaceCameraOnY();
     }
 
     private void OnDisable()
@@ -93,6 +151,9 @@ public class ModelDialogue : MonoBehaviour
         busy = false;
         currentRoutine = null;
         if (bubbleRoot != null) bubbleRoot.SetActive(false);
+
+        // If we're disabled mid-selection, release the freeze so the object can move again.
+        if (isSelected) SetSelected(false);
     }
 
     // ------------------------------------------------------------------ public API
@@ -112,6 +173,25 @@ public class ModelDialogue : MonoBehaviour
         return true;
     }
 
+    /// <summary>
+    /// Called by CameraController.SelectModel / Deselect to drive the "face camera" behavior
+    /// and the position freeze. Selection is per-instance: only this GameObject is affected.
+    /// </summary>
+    public void SetSelected(bool selected)
+    {
+        if (isSelected == selected) return;
+        isSelected = selected;
+
+        // Reset the smoothing velocity on transitions so we never carry momentum across
+        // selection changes (which could cause a brief overshoot / jitter).
+        faceVelocity = 0f;
+
+        if (selected)
+            BeginFreeze();
+        else
+            EndFreeze();
+    }
+
     [ContextMenu("Reset Dialogue")]
     public void ResetDialogue()
     {
@@ -120,6 +200,72 @@ public class ModelDialogue : MonoBehaviour
         nextLineIndex = 0;
         busy = false;
         if (bubbleRoot != null) HideBubble();
+    }
+
+    // ------------------------------------------------------------------ freeze helpers
+
+    private void BeginFreeze()
+    {
+        if (!freezePositionWhileSelected) return;
+
+        frozenPosition = transform.position;
+        hasFrozenPosition = true;
+
+        // Rigidbody (if any): stop physics from moving us. Constraints are restored on deselect,
+        // so we don't permanently alter the object's setup.
+        if (rb != null)
+        {
+            savedConstraints = rb.constraints;
+            hasSavedConstraints = true;
+            rb.constraints = RigidbodyConstraints.FreezeAll;
+            rb.linearVelocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+        }
+    }
+
+    private void EndFreeze()
+    {
+        hasFrozenPosition = false;
+
+        if (rb != null && hasSavedConstraints)
+        {
+            rb.constraints = savedConstraints;
+            hasSavedConstraints = false;
+        }
+    }
+
+    // ------------------------------------------------------------------ facing the camera
+
+    /// <summary>
+    /// Rotates the face target around Y only, toward the camera's horizontal position.
+    /// Using Y-only means the capsule stays upright no matter where the camera is.
+    /// Only affects the transform this component is attached to (or faceTarget).
+    /// </summary>
+    private void FaceCameraOnY()
+    {
+        if (cam == null) cam = Camera.main;
+        if (cam == null) return;
+
+        Transform target = FaceTarget;
+        if (target == null) return;
+
+        Vector3 toCamera = cam.transform.position - target.position;
+        toCamera.y = 0f; // Y-only: ignore the height difference so we don't tip.
+
+        // Dead-zone: if the camera is directly above/below us (or coincides),
+        // toCamera is near-zero and atan2 is noisy. Skip this frame instead.
+        if (toCamera.sqrMagnitude < 0.0001f) return;
+
+        float targetYaw = Mathf.Atan2(toCamera.x, toCamera.z) * Mathf.Rad2Deg + faceCameraYawOffset;
+
+        float currentYaw = target.eulerAngles.y;
+        float smoothedYaw = Mathf.SmoothDampAngle(
+            currentYaw, targetYaw, ref faceVelocity, Mathf.Max(0.001f, faceCameraSmoothTime));
+
+        // Preserve any non-Y rotation that other systems might have set.
+        Vector3 euler = target.eulerAngles;
+        euler.y = smoothedYaw;
+        target.eulerAngles = euler;
     }
 
     // ------------------------------------------------------------------ the line sequence

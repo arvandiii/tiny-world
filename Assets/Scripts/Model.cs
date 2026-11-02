@@ -10,6 +10,14 @@ using UnityEngine;
 /// Movement is driven by code (terrain speed multipliers), not by physics tricks.
 /// The Rigidbody only provides gravity and collision; we set its horizontal
 /// velocity and leave the vertical velocity to gravity.
+///
+/// Facing: the Rigidbody has FreezeRotation so the capsule never tips over, but
+/// we still want it to *look* where it walks. So each frame the transform's Y
+/// angle is smoothly turned toward the current walk direction (Y-axis only).
+///
+/// Selected models are the exception: while selected, ModelDialogue is the sole
+/// owner of the Y rotation (it faces the camera), and this script does nothing
+/// at all — it forgets its target, stops moving, and yields control.
 /// </summary>
 [RequireComponent(typeof(Rigidbody))]
 public class Model : MonoBehaviour
@@ -25,6 +33,12 @@ public class Model : MonoBehaviour
     [Tooltip("In cells (1 cell = 1 m at cellSize 1).")]
     public float sightRange = 15f;
     public bool canSwim = false;
+
+    [Header("Facing")]
+    [Tooltip("How quickly the Model turns to face its walk direction. Higher = snappier turn.")]
+    public float turnSmoothTime = 0.15f;
+    [Tooltip("Extra Y rotation applied on top of facing the walk direction (degrees). Use this if the capsule's visual 'front' isn't +Z.")]
+    public float facingYawOffset = 0f;
 
     [Header("Identity (behavior not implemented yet)")]
     public Gender gender = Gender.Unspecified;      // TODO: gender effects
@@ -84,6 +98,17 @@ public class Model : MonoBehaviour
     private bool hasTarget;
     private float pauseTimer;
 
+    // Facing: the Y angle we're smoothly turning toward. Set whenever we have a
+    // walk direction; used in FixedUpdate to update the transform's Y rotation.
+    private float targetYaw;
+    private float yawVelocity;
+    private bool hasWalkDirection;
+
+    // Cached sibling reference. ModelDialogue lives on the same GameObject (see
+    // the selection/facing system). May be null if this model has no dialogue
+    // component; the facing code still works in that case.
+    private ModelDialogue dialogue;
+
     // Food seeking
     private Food targetFood;
     private bool chasingFood;
@@ -98,6 +123,7 @@ public class Model : MonoBehaviour
         rb = GetComponent<Rigidbody>();
         rb.constraints = RigidbodyConstraints.FreezeRotation; // keep the capsule upright
         rb.interpolation = RigidbodyInterpolation.Interpolate;
+        dialogue = GetComponent<ModelDialogue>(); // may be null; that's fine
     }
 
     private void Start()
@@ -121,6 +147,9 @@ public class Model : MonoBehaviour
 
         if (!grid.IsInBounds(c.x, c.y))
             Debug.LogWarning("[Model] Spawned outside the grid; it cannot pick walkable targets from here.", this);
+
+        // Start facing wherever the Model was placed in the scene.
+        targetYaw = transform.eulerAngles.y;
     }
 
     private void OnValidate()
@@ -132,12 +161,23 @@ public class Model : MonoBehaviour
         pauseMin = Mathf.Max(0f, pauseMin);
         pauseMax = Mathf.Max(pauseMin, pauseMax);
         foodScanInterval = Mathf.Max(0.02f, foodScanInterval);
+        turnSmoothTime = Mathf.Max(0.001f, turnSmoothTime);
     }
 
     // All logic runs in FixedUpdate because movement is applied through the Rigidbody.
     private void FixedUpdate()
     {
         float dt = Time.fixedDeltaTime;
+
+        // Selected models give up everything and just face the camera. This must
+        // be the very first check so we never move, drain energy, scan food, or
+        // write Y while selected. ModelDialogue owns Y during this time.
+        if (IsSelected)
+        {
+            StopHorizontal();
+            ClearTarget();
+            return;
+        }
 
         if (isDead)
         {
@@ -201,6 +241,37 @@ public class Model : MonoBehaviour
         if (!hasTarget) PickTarget(); // patrol: random walk (also what a hungry Model does until it sees food)
         if (hasTarget) MoveTowardTarget(dt, here);
         else StopHorizontal();
+
+        // Apply the heading turn *after* movement logic so targetYaw is fresh for
+        // this frame. Runs every FixedUpdate regardless of whether we moved.
+        ApplyFacing(dt);
+    }
+
+    // ------------------------------------------------------------------ facing
+
+    /// <summary>
+    /// True while ModelDialogue owns the Y rotation for this object. This script
+    /// stays completely out of the Y angle while selected — no fighting, no shake.
+    /// </summary>
+    private bool IsSelected => dialogue != null && dialogue.IsSelected;
+
+    /// <summary>
+    /// Smoothly turns the transform's Y angle toward targetYaw (Y-only, so the
+    /// capsule never tips). The Rigidbody has FreezeRotation, so we don't use
+    /// MoveRotation — we set the Y euler directly, preserving X/Z.
+    /// </summary>
+    private void ApplyFacing(float dt)
+    {
+        if (!hasWalkDirection) return;
+
+        float currentYaw = transform.eulerAngles.y;
+        float smoothedYaw = Mathf.SmoothDampAngle(
+            currentYaw, targetYaw, ref yawVelocity, turnSmoothTime, Mathf.Infinity, dt);
+
+        // Write only Y; leave X/Z untouched so any deliberate tilt stays intact.
+        Vector3 euler = transform.eulerAngles;
+        euler.y = smoothedYaw;
+        transform.eulerAngles = euler;
     }
 
     // ------------------------------------------------------------------ target helpers
@@ -409,6 +480,11 @@ public class Model : MonoBehaviour
 
         Vector3 horizontalVelocity = dir * (step / dt);
         rb.linearVelocity = new Vector3(horizontalVelocity.x, rb.linearVelocity.y, horizontalVelocity.z);
+
+        // Face the direction we're walking. Y-only, smoothed in ApplyFacing().
+        // atan2(x, z) gives the standard Unity yaw for a +Z-forward capsule.
+        targetYaw = Mathf.Atan2(dir.x, dir.z) * Mathf.Rad2Deg + facingYawOffset;
+        hasWalkDirection = true;
 
         // Costs depend on the terrain the Model is standing on (current cell).
         energy = Mathf.Max(0f, energy - profile.moveEnergyPerSecond * energyCostMultiplier * dt);
