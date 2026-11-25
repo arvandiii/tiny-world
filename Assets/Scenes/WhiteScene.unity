@@ -1826,10 +1826,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ModelDialogue
   hasDialogue: 1
-  lines:
-  - waitSeconds: 5
-    text: Hello!
-    visibleSeconds: 4
+  lines: []
   loopLines: 0
   bubbleRoot: {fileID: 420611187}
   bubbleText: {fileID: 1658100126}
@@ -2286,10 +2283,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ModelDialogue
   hasDialogue: 1
-  lines:
-  - waitSeconds: 5
-    text: Hello!
-    visibleSeconds: 4
+  lines: []
   loopLines: 0
   bubbleRoot: {fileID: 1720395302}
   bubbleText: {fileID: 410621674}
@@ -3727,10 +3721,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ModelDialogue
   hasDialogue: 1
-  lines:
-  - waitSeconds: 5
-    text: Hello!
-    visibleSeconds: 4
+  lines: []
   loopLines: 0
   bubbleRoot: {fileID: 192377512}
   bubbleText: {fileID: 2121853521}
@@ -3942,10 +3933,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ModelDialogue
   hasDialogue: 1
-  lines:
-  - waitSeconds: 5
-    text: Hello!
-    visibleSeconds: 4
+  lines: []
   loopLines: 0
   bubbleRoot: {fileID: 2108934199}
   bubbleText: {fileID: 664398452}
@@ -4247,10 +4235,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ModelDialogue
   hasDialogue: 1
-  lines:
-  - waitSeconds: 5
-    text: Hello!
-    visibleSeconds: 4
+  lines: []
   loopLines: 0
   bubbleRoot: {fileID: 1266413473}
   bubbleText: {fileID: 1460707708}
@@ -4462,10 +4447,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ModelDialogue
   hasDialogue: 1
-  lines:
-  - waitSeconds: 5
-    text: Hello!
-    visibleSeconds: 4
+  lines: []
   loopLines: 0
   bubbleRoot: {fileID: 1282222509}
   bubbleText: {fileID: 1473578268}
